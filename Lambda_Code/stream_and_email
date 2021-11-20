@@ -1,0 +1,101 @@
+import json
+import boto3
+from boto3.dynamodb.condition import key
+import os
+
+table_name=os.environ['TickerData']
+SENDER=os.environ['email_id']
+RECIPIENT=os.environ['email_id']
+AWS_REGION=os.environ['us-east-1']
+percent_change=int(os.environ['2'])
+
+def ses_email(message):
+    ses=boto3.client('ses',region_name=AWS_REGION)
+    CHARSET="UTF-8"
+    SUBJECT="Alert for crypto/stock Volatility"
+    BODY="""
+    Hello,
+    There is some update on your favourite stock/crypto price movements.
+    %s
+    
+    Regards,
+    Shrishty
+    """%message
+    
+    try:
+        response=ses.ses_email(
+            Destination={
+                'ToAddresses':[
+                    RECIPIENT,
+                ],
+            },
+            Message={
+                'Body':{
+                    'Text':{
+                        'Charset':CHARSET,
+                        'Data': BODY,
+                    },
+                },
+                'Subject':{
+                    'Charset': CHARSET,
+                    'Data': SUBJECT,
+                },
+            },
+            Source=SENDER,
+        )
+    except Exception as e:
+        print(e)
+        
+def query_prices(id):
+    dynamodb=boto3.resource('dynamodb')
+    table=dynamodb.Table(table_name)
+    response=table.query(
+        KeyConditionExpression=Key('ticker').eq(id),
+        ScanIndexForward=False
+    )
+    values=response['Items']
+    return values
+    
+def find_volatility(values):
+    item_values=values[:2]
+    ticker=item_values[0]['ticker']
+    volatile_values=[]
+    for item in item_values:
+        value=float(item['price'])
+        volatile_values.append(value)
+    
+    if len(volatile_values)==1:
+        pass
+    else:
+        if volatile_values[0]>volatile_values[1]:
+            increase=volatile_values[0]-volatile_values[1]
+            increase_percentage=int(increase/volatile_values[1]*100)
+            if increase_percentage > percent_change:
+                message=("There is volatility in the market. The price of"+ticker+"has rised by"+ str(increase_percentage)+"%"+"with current price"+str(volatile_values[0]))
+                ses_email(message)
+        elif volatile_values[0]==volatile_values[1]:
+            pass
+        else:
+            decrease= volatile_values[1]-volatile_values[0]
+            decrease_percent=int((decrease/volatile_values[1])*100)
+            if decrease_percent> percent_change:
+                message=("There is volatility in the market. The price of"+ticker+"has dropped by"+ str(decrease_percentage)+"%"+"with current price"+str(volatile_values[0]))
+                ses_email(message)
+                    
+def handle_insert(record):
+    newImage=record["dynamodb"]["NewImage"]
+    ticker=newImage["ticker"]["S"]
+    newTickerPrice= newImage["price"]["N"]
+    timestamp=newImage["timestamp"]["N"]
+    values=query_prices(ticker)
+    return find_volatility(values)
+            
+def lambda_handler(event, context):
+    try:
+        for record in event['Records']:
+            if record['eventName']=="INSERT":
+                handle_insert(record)
+                
+    except Exception as e:
+        print(e)
+        return "Exception!"
